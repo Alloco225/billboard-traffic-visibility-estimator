@@ -137,6 +137,28 @@ export const dbOperations = {
   delete(id: number) {
     const db = getDb();
     return db.prepare('DELETE FROM billboards WHERE id = ?').run(id);
+  },
+
+  update(id: number, data: {
+    name?: string;
+    lat?: number;
+    lng?: number;
+    facing_azimuth?: number | null;
+  }) {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE billboards SET
+        name = @name,
+        lat = @lat,
+        lng = @lng,
+        facing_azimuth = @facing_azimuth,
+        snapped_lat = NULL,
+        snapped_lng = NULL,
+        road_bearing = NULL,
+        updated_at = datetime('now')
+      WHERE id = @id
+    `);
+    return stmt.run({ id, ...data });
   }
 };
 
