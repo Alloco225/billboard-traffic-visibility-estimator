@@ -1,87 +1,118 @@
-// scripts/seed.ts - Panneaux publicitaires à Abidjan sur les axes majeurs
+// scripts/seed.ts - Seed billboards from CSV data
 import { dbOperations } from '../src/lib/db';
+import fs from 'fs';
+import path from 'path';
 
-// Supprimer les panneaux existants
-const existing = dbOperations.getAll();
-for (const bb of existing) {
-  dbOperations.delete(bb.id);
-}
-console.log(`${existing.length} panneaux existants supprimés.\n`);
+// Path to CSV file
+const csvPath = path.join(__dirname, '../src/data/pige_orange_ci.csv');
 
-// Panneaux sur les grands axes routiers d'Abidjan
-const abidjanBillboards = [
-  // Boulevard VGE (Valéry Giscard d'Estaing) - Axe principal Plateau-Cocody
-  {
-    name: 'Bd VGE - Carrefour Indénié',
-    lat: 5.3289,
-    lng: -3.9847,
-    facing_azimuth: 270  // Face à l'ouest (trafic venant de Cocody)
-  },
+// Parse CSV content
+function parseCSV(content: string): Array<Record<string, string>> {
+  const lines = content.split('\n').filter(line => line.trim());
+  if (lines.length === 0) return [];
 
-  // Pont Charles de Gaulle - Connexion Plateau-Treichville
-  {
-    name: 'Pont de Gaulle - Entrée Plateau',
-    lat: 5.3178,
-    lng: -4.0194,
-    facing_azimuth: 180  // Face au sud (trafic venant de Treichville)
-  },
+  // Remove BOM if present and parse header
+  const headerLine = lines[0].replace(/^\uFEFF/, '');
+  const headers = parseCSVLine(headerLine);
 
-  // Boulevard Lagunaire - Cocody
-  {
-    name: 'Bd Lagunaire - Cocody Ambassades',
-    lat: 5.3230,
-    lng: -3.9720,
-    facing_azimuth: 90  // Face à l'est
-  },
+  const records: Array<Record<string, string>> = [];
 
-  // Autoroute A1 (Autoroute du Nord) - Très fréquentée
-  {
-    name: 'Autoroute A1 - Sortie Adjamé',
-    lat: 5.3520,
-    lng: -4.0180,
-    facing_azimuth: 0  // Face au nord (trafic montant)
-  },
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCSVLine(lines[i]);
+    if (values.length === headers.length) {
+      const record: Record<string, string> = {};
+      headers.forEach((header, index) => {
+        record[header.replace(/"/g, '').trim()] = values[index].replace(/"/g, '').trim();
+      });
+      records.push(record);
+    }
+  }
 
-  // Boulevard de Marseille - Marcory (Zone commerciale)
-  {
-    name: 'Bd de Marseille - Zone 4',
-    lat: 5.3055,
-    lng: -3.9780,
-    facing_azimuth: 45  // Face nord-est
-  },
-
-  // Carrefour Akwaba - Point névralgique
-  {
-    name: 'Carrefour Akwaba - Marcory',
-    lat: 5.2985,
-    lng: -3.9850,
-    facing_azimuth: 315  // Face nord-ouest
-  },
-
-  // Boulevard François Mitterrand - Cocody St Jean
-  {
-    name: 'Bd Mitterrand - Cocody St Jean',
-    lat: 5.3480,
-    lng: -3.9650,
-    facing_azimuth: 180  // Face au sud
-  },
-
-  // Route de Bingerville - Sortie Abidjan Est
-  {
-    name: 'Route de Bingerville - Riviera 2',
-    lat: 5.3550,
-    lng: -3.9380,
-    facing_azimuth: 270  // Face à l'ouest (trafic entrant)
-  },
-];
-
-console.log('Création des panneaux sur les axes majeurs d\'Abidjan...\n');
-
-for (const billboard of abidjanBillboards) {
-  const created = dbOperations.create(billboard);
-  console.log(`✓ ${created.name}`);
-  console.log(`  Position: ${billboard.lat}, ${billboard.lng} | Orientation: ${billboard.facing_azimuth}°\n`);
+  return records;
 }
 
-console.log(`Terminé! ${abidjanBillboards.length} panneaux créés.`);
-console.log('\nLancez "npm run dev" et cliquez sur "Actualiser tout" pour obtenir les données de trafic.');
+// Parse a single CSV line (handles quoted values with commas)
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (const char of line) {
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+
+  return result;
+}
+
+// Main seed function
+async function seed() {
+  console.log('Reading CSV data from:', csvPath);
+
+  // Read CSV file
+  const csvContent = fs.readFileSync(csvPath, 'utf-8');
+  const records = parseCSV(csvContent);
+
+  console.log(`Found ${records.length} records in CSV\n`);
+
+  // Delete existing billboards
+  const existing = dbOperations.getAll();
+  for (const bb of existing) {
+    dbOperations.delete(bb.id);
+  }
+  console.log(`${existing.length} existing billboards deleted.\n`);
+
+  // Track unique locations to avoid duplicates (same lat/lng)
+  const uniqueLocations = new Map<string, boolean>();
+  let created = 0;
+  let skipped = 0;
+
+  for (const record of records) {
+    const lat = parseFloat(record['Latitude']);
+    const lng = parseFloat(record['Longitude']);
+    const name = record['Emplacement'];
+
+    // Skip invalid coordinates
+    if (isNaN(lat) || isNaN(lng) || !name) {
+      skipped++;
+      continue;
+    }
+
+    // Create unique key for location
+    const locationKey = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+
+    // Skip duplicates
+    if (uniqueLocations.has(locationKey)) {
+      skipped++;
+      continue;
+    }
+    uniqueLocations.set(locationKey, true);
+
+    // Create billboard
+    const billboard = dbOperations.create({
+      name: name,
+      lat: lat,
+      lng: lng
+    });
+
+    created++;
+
+    // Show progress every 100 records
+    if (created % 100 === 0) {
+      console.log(`Created ${created} billboards...`);
+    }
+  }
+
+  console.log(`\n✓ Created ${created} billboards from CSV data`);
+  console.log(`✗ Skipped ${skipped} records (duplicates or invalid data)`);
+  console.log('\nRun "npm run dev" and click "Actualiser tout" to fetch traffic data.');
+}
+
+seed().catch(console.error);
